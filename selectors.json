@@ -42,8 +42,10 @@
     "[role='toolbar'][aria-label='Message actions']"
   ],
 
+  "_unsendMenuItem_note": "Matched in code (unsendMessage): a role=menuitem labeled 'Unsend message', or 'Remove' when the other account is deactivated.",
   "unsendMenuItem": [
     "[role='menuitem'][aria-label='Unsend message']",
+    "[role='menuitem'][aria-label='Remove']",
     "div[aria-label='Unsend message']"
   ],
 

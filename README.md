@@ -143,6 +143,12 @@ Unsending is **permanent**, so scan and review your `tasks.json` before you run.
   download (a zip of JSON files, one per conversation). If you have one, point
   `e2ee_zip` at it in `config.json` and it'll be included too. If not, just leave
   it blank.
+- **Stale IDs, nicknames, deactivated accounts — handled automatically.** Export
+  thread IDs often go stale (threads that moved to end-to-end encryption get new
+  IDs), so the tool finds the right thread via the "Search Messenger" box — by
+  name, then by message text. It identifies your own messages even when a chat
+  uses nicknames, and when the other person's account is deactivated it uses the
+  "Remove" menu item in place of "Unsend". You don't need to do anything for these.
 - **A thread fails or a button isn't found.** Messenger occasionally changes its
   layout. All the UI strings live in **`selectors.json`** — a failing step will
   drop a screenshot in `failures/` so you can see what changed and update the

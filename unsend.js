@@ -5,23 +5,23 @@
  * you stay logged into; Messenger has no API, so this automates the UI.
  *
  * How it works (selectors verified against the live messenger.com DOM):
- *   - Messages: div[aria-roledescription="message"] with data-message-id and
- *     aria-label "At <time>, You: <text>" (", You: " marks your own messages).
- *   - Unsend chain: hover message → [aria-label="More actions"] →
- *     menuitem "Unsend message" → dialog (radio "Unsend for everyone" is
- *     pre-checked) → button "Remove".
- *   - In-conversation search: open via "Conversation information" (i) →
- *     "Search" row → input. Result rows are unlabeled div[role=button]:
- *     line 1 = sender, line 2 = snippet.
- *   - Thread IDs from the export work for group/inbox threads; 1:1 threads that
- *     migrated to end-to-end encryption open a dead "Facebook user" placeholder,
- *     so we fall back to global search by name and cache the resolved id.
+ *   - Your messages: div[aria-roledescription="message"] whose aria-label reads
+ *     "At <time>, You: <text>". The ", You:" marks messages you sent — this holds
+ *     even in threads where nicknames are set.
+ *   - Unsend chain: hover a message → "More actions" → the "Unsend message" menu
+ *     item (or "Remove message" when the other account is deactivated) → confirm
+ *     dialog → "Remove".
+ *   - In-conversation search: open via "Conversation information" (i) → "Search".
+ *   - Finding the right thread: export thread IDs are often stale (threads that
+ *     moved to end-to-end encryption get reassigned new IDs), so navigation falls
+ *     back to the left "Search Messenger" box — by participant name, then by
+ *     message text ("Search messages for …") — and caches the resolved URL.
  *
  * If Messenger's UI changes, edit selectors.json — the strings live there.
  *
  * Usage:
  *   node unsend.js                 # run (resumes automatically)
- *   node unsend.js --list          # print thread queue and exit
+ *   node unsend.js --list          # print the thread queue and exit
  *   node unsend.js --smallest      # process fewest-message threads first
  *   node unsend.js --largest       # process biggest threads first (default)
  *   node unsend.js --thread <id>   # process a single thread
@@ -77,10 +77,10 @@ function makePrompt() {
 function loadProgress() {
   if (fs.existsSync(PROGRESS_FILE)) {
     const p = JSON.parse(fs.readFileSync(PROGRESS_FILE, "utf-8"));
-    p.resolvedIds = p.resolvedIds || {};
+    p.resolvedUrls = p.resolvedUrls || {};
     return p;
   }
-  return { threads: {}, resolvedIds: {}, totalUnsent: 0 };
+  return { threads: {}, resolvedUrls: {}, totalUnsent: 0 };
 }
 const saveProgress = (p) => fs.writeFileSync(PROGRESS_FILE, JSON.stringify(p, null, 2));
 
@@ -143,71 +143,166 @@ async function screenshotFailure(page, label) {
 
 // ─── Navigation ────────────────────────────────────────────────
 
-/** Text visible in the conversation header/main region. */
-async function mainText(page) {
-  return page.evaluate(() => {
-    const m = document.querySelector('[role="main"]');
-    return m ? (m.innerText || "").slice(0, 400) : "";
-  }).catch(() => "");
+/** How many messages are currently rendered — the reliable "loaded" signal.
+ *  (The header can read "Facebook user" and a spinner can linger even on a
+ *  fully-loaded E2EE thread, so those are NOT reliable; message count is.) */
+async function renderedMessageCount(page) {
+  return page.evaluate(() => document.querySelectorAll('[aria-roledescription="message"]').length).catch(() => 0);
+}
+
+async function waitForMessages(page, ms = 12000) {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if ((await renderedMessageCount(page)) > 0) return true;
+    await sleep(1000);
+  }
+  return false;
+}
+
+/** Focus the left "Search Messenger" box, clear it, type a query, let it settle. */
+async function typeGlobalSearch(page, query) {
+  const gs = await find(page, "globalSearchInput", { timeout: 6000 });
+  if (!gs) throw new Error("global search input not found");
+  await mouseClick(page, gs);
+  await jitter(500, 900);
+  await page.keyboard.down("Meta"); await page.keyboard.press("a"); await page.keyboard.up("Meta");
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type(query, { delay: 55 + Math.random() * 45 });
+  await jitter(2500, 3500);
+}
+
+/** Click the global-search result option whose label matches a person/thread
+ *  name (skips the "Search messages for …" action row). Returns true if clicked. */
+async function clickNameOption(page, name) {
+  const handle = await page.evaluateHandle((nm) => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const want = norm(nm);
+    const opts = [...document.querySelectorAll('[role="option"]')].filter((e) => e.offsetParent !== null);
+    return opts.find((e) => {
+      const l = norm(e.getAttribute("aria-label") || e.innerText || "");
+      return !l.startsWith("search ") && (l === want || l.startsWith(want) || l.includes(want));
+    }) || null;
+  }, name);
+  const el = handle.asElement();
+  if (!el) return false;
+  await mouseClick(page, el);
+  return true;
+}
+
+/** After a thread opens, confirm one of MY messages with this exact text is
+ *  actually here (via in-conversation search). This is the guard that lets
+ *  text-search reject a wrong-thread match instead of unsending in it. */
+async function verifyOwnMessage(page, sampleText) {
+  const word = (sampleText.split(/\s+/).sort((a, b) => b.length - a.length)[0] || sampleText)
+    .toLowerCase().replace(/[^a-z0-9]/gi, "").slice(0, 20);
+  if (!word) return false;
+  try {
+    await searchInConversation(page, word);
+    const rows = await collectResultRows(page);
+    // Match on the snippet text, not the sender — in nickname threads the
+    // sender column shows a nickname, but a matching snippet is proof enough
+    // (the search term came from one of my own sent messages).
+    const want = normalize(sampleText).slice(0, 15);
+    const ok = rows.some((r) => normalize(r.snippet).includes(want));
+    const clear = await find(page, "clearSearchButton", { timeout: 700 });
+    if (clear) await mouseClick(page, clear).catch(() => {});
+    await page.keyboard.press("Escape").catch(() => {});
+    return ok;
+  } catch { return false; }
 }
 
 /**
- * Open a thread: try the export thread ID first; if it lands on a dead
- * "Facebook user" placeholder (E2EE-migrated 1:1s), fall back to global
- * search by name. Returns true when the right thread is open.
+ * Resolve a thread by searching a distinctive message text: type the text,
+ * click the top "Search messages for …" option, click the result row that
+ * matches the participant name or the snippet (never a blind first row — that
+ * risks a wrong thread), then VERIFY the target message is really present.
+ * Returns true only when the correct thread is open.
+ */
+async function resolveByMessageText(page, text, expectName) {
+  await typeGlobalSearch(page, text);
+
+  const sm = await page.evaluateHandle(() => {
+    const opts = [...document.querySelectorAll('[role="option"]')].filter((e) => e.offsetParent !== null);
+    return opts.find((e) => /^search messages/i.test((e.getAttribute("aria-label") || e.innerText || "").trim())) || null;
+  });
+  if (!sm.asElement()) { await page.keyboard.press("Escape").catch(() => {}); return false; }
+  await mouseClick(page, sm.asElement());
+  await jitter(2500, 3500);
+
+  const pick = await page.evaluateHandle((expect, snippet) => {
+    const norm = (s) => (s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    const href = (e) => e.getAttribute("href") ||
+      (e.querySelector && e.querySelector('a[href*="/t/"]') && e.querySelector('a[href*="/t/"]').getAttribute("href")) || "";
+    // Real result rows: non-empty text AND a clean /t/<id> or /e2ee/t/<id> href
+    // (excludes the persistent nav shortcuts, which have ?focus_target params).
+    const rows = [...document.querySelectorAll('[role="option"], a[href*="/t/"], [role="listitem"]')]
+      .filter((e) => e.offsetParent !== null && (e.innerText || "").trim().length > 0);
+    const isThread = (e) => /^\/(e2ee\/)?t\/\d+\/?$/.test(href(e));
+    const threads = rows.filter(isThread);
+    const named = expect && threads.find((e) => norm(e.innerText).includes(norm(expect)));
+    const snip = threads.find((e) => norm(e.innerText).includes(norm(snippet).slice(0, 18)));
+    return named || snip || null; // no blind fallback
+  }, expectName, text);
+  if (!pick.asElement()) { await page.keyboard.press("Escape").catch(() => {}); return false; }
+  await mouseClick(page, pick.asElement());
+
+  if (!(await waitForMessages(page, 12000))) { await page.keyboard.press("Escape").catch(() => {}); return false; }
+  await page.keyboard.press("Escape").catch(() => {});
+  return await verifyOwnMessage(page, text);
+}
+
+/**
+ * Open the correct current thread. Export thread IDs are often stale (threads
+ * migrated to E2EE get new IDs + an /e2ee/ URL prefix), so:
+ *   1. Try any cached URL, then the export /t/<id> (fast path for still-valid ids).
+ *   2. Global search by participant/thread name (handles E2EE + nickname threads;
+ *      we trust the name-matched option and verify by messages rendering, never
+ *      by the header — nicknames make the header differ).
+ *   3. Global search by message text → "Search messages for …" → matching result
+ *      (handles deactivated accounts, unsearchable names, and group threads).
+ * Caches the resolved URL so re-runs are fast.
  */
 async function navigateToThread(page, thread, progress) {
   const expectName = thread.title || thread.participants[0] || "";
-  const tryIds = [progress.resolvedIds[thread.thread_dir], thread.thread_id].filter(Boolean);
+  progress.resolvedUrls = progress.resolvedUrls || {};
 
-  for (const id of tryIds) {
-    await page.goto(`${MESSENGER}/t/${id}`, { waitUntil: "networkidle2", timeout: 60000 });
-    await jitter(3000, 4500);
-    const text = await mainText(page);
-    if (text.includes("Facebook user")) continue; // dead placeholder
-    if (normalize(text).includes(normalize(expectName).slice(0, 25))) return true;
-    // Header didn't match but not a known-dead marker — check messages render
-    if ((await page.$$(SEL.message[0])).length > 0) return true;
+  const cache = (how) => {
+    const p = page.url().replace(MESSENGER, "");
+    if (/^\/(e2ee\/)?t\//.test(p)) { progress.resolvedUrls[thread.thread_dir] = p; saveProgress(progress); }
+    console.log(`    opened via ${how} → ${p}`);
+  };
+
+  // 1. Fast paths.
+  const direct = [];
+  if (progress.resolvedUrls[thread.thread_dir]) direct.push(progress.resolvedUrls[thread.thread_dir]);
+  if (thread.thread_id) direct.push(`/t/${thread.thread_id}`);
+  for (const p of direct) {
+    await page.goto(MESSENGER + p, { waitUntil: "networkidle2", timeout: 60000 });
+    if (await waitForMessages(page, 8000)) { cache("direct id"); return true; }
   }
 
-  // Fallback: global search by name
-  console.log(`    thread id dead → resolving "${expectName}" via global search…`);
-  const gs = await find(page, "globalSearchInput", { timeout: 5000 });
-  if (!gs) throw new Error("global search input not found");
-  await mouseClick(page, gs);
-  await jitter(600, 1200);
-  await page.keyboard.type(expectName, { delay: 70 + Math.random() * 50 });
-  await jitter(2500, 3500);
+  // 2. Global search by name.
+  if (expectName && !/facebook user/i.test(expectName)) {
+    console.log(`    resolving "${expectName}" via name search…`);
+    await typeGlobalSearch(page, expectName);
+    if (await clickNameOption(page, expectName)) {
+      if (await waitForMessages(page, 12000)) { await page.keyboard.press("Escape").catch(() => {}); cache("name search"); return true; }
+    }
+    await page.keyboard.press("Escape").catch(() => {});
+  }
 
-  // Pick the option whose label matches the name (skip "Search messages for …")
-  const options = await page.$$(SEL.globalSearchOption[0]);
-  let target = null;
-  for (const opt of options) {
-    const label = normalize(await opt.evaluate((e) => e.getAttribute("aria-label") || e.innerText || ""));
-    if (label.startsWith("search messages")) continue;
-    if (label === normalize(expectName) || label.startsWith(normalize(expectName))) { target = opt; break; }
+  // 3. Global search by message text — try the most distinctive (longest,
+  //    unique) messages first, since common phrases surface the wrong thread.
+  const samples = [...new Set(thread.groups.flatMap((g) => g.messages.map((m) => m.text)))]
+    .filter((t) => t && t.trim().length >= 8)
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 4);
+  for (const sample of samples) {
+    console.log(`    resolving via message text: "${sample.slice(0, 40)}"…`);
+    if (await resolveByMessageText(page, sample, expectName)) { cache("text search"); return true; }
   }
-  if (!target) {
-    await page.keyboard.press("Escape");
-    throw new Error(`no global-search result matching "${expectName}"`);
-  }
-  await mouseClick(page, target);
-  await jitter(3500, 5000);
 
-  const text = await mainText(page);
-  if (!normalize(text).includes(normalize(expectName).slice(0, 25))) {
-    throw new Error(`landed on wrong thread (header: ${text.slice(0, 60)})`);
-  }
-  const m = page.url().match(/\/t\/([^/?#]+)/);
-  if (m) {
-    progress.resolvedIds[thread.thread_dir] = m[1];
-    saveProgress(progress);
-    console.log(`    resolved → t/${m[1]} (cached)`);
-  }
-  // Close the global-search dropdown so it can't swallow the next click.
-  await page.keyboard.press("Escape").catch(() => {});
-  await jitter(600, 1000);
-  return true;
+  throw new Error(`could not open "${expectName}" via id, name, or message-text search`);
 }
 
 // ─── In-conversation search ────────────────────────────────────
@@ -309,29 +404,42 @@ async function unsendMessage(page, msgEl) {
   if (!moreEl) throw new Error("'More actions' button did not appear on hover");
   await mouseClick(page, moreEl);
 
-  const menuItem = await find(page, "unsendMenuItem", { timeout: 4000 });
+  // The menu item is "Unsend message" normally; when the other account is
+  // deactivated (can't unsend for everyone) Messenger swaps it for a "Remove"
+  // item whose aria-label is "Remove message" (innerText "Remove"). Match the
+  // verb in either the aria-label OR the text — "Forward"/"Report" won't match.
+  const findMenuItem = () => page.evaluateHandle(() => {
+    const items = [...document.querySelectorAll('[role="menuitem"]')].filter((e) => e.offsetParent !== null);
+    const txt = (e) => ((e.getAttribute("aria-label") || "") + " " + (e.innerText || "")).toLowerCase();
+    return items.find((e) => /\bunsend\b/.test(txt(e))) ||
+           items.find((e) => /\bremove\b/.test(txt(e))) || null;
+  });
+  let menuItem = (await findMenuItem()).asElement();
+  for (let i = 0; i < 6 && !menuItem; i++) { await sleep(400); menuItem = (await findMenuItem()).asElement(); }
   if (!menuItem) {
     await page.keyboard.press("Escape");
-    throw new Error("'Unsend message' menu item not found");
+    throw new Error("neither 'Unsend message' nor 'Remove' menu item found");
   }
   await mouseClick(page, menuItem);
 
-  const dialog = await find(page, "dialog", { timeout: 5000 });
-  if (!dialog) throw new Error("unsend dialog did not open");
-  await jitter(500, 1000);
-
-  // "Unsend for everyone" (value=0) is pre-checked; click it if somehow not.
-  const radio = await page.$(SEL.unsendForEveryoneRadio[0]);
-  if (radio) {
-    const checked = await radio.evaluate((r) => r.checked || r.getAttribute("aria-checked") === "true");
-    if (!checked) { await mouseClick(page, radio); await jitter(300, 600); }
+  // A confirm dialog usually appears (normal unsend, and often the deactivated
+  // "Remove" too). If it does: select "Unsend for everyone" when offered, then
+  // click the "Remove" confirm. If no dialog appears, the removal already
+  // happened (some deactivated cases) — that's success.
+  const dialog = await find(page, "dialog", { timeout: 3500 });
+  if (dialog) {
+    await jitter(500, 1000);
+    const radio = await page.$(SEL.unsendForEveryoneRadio[0]);
+    if (radio) {
+      const checked = await radio.evaluate((r) => r.checked || r.getAttribute("aria-checked") === "true");
+      if (!checked) { await mouseClick(page, radio); await jitter(300, 600); }
+    }
+    if (!(await clickDialogButton(page, "Remove", { timeout: 5000 }))) {
+      await page.keyboard.press("Escape");
+      throw new Error("confirm 'Remove' button not found/enabled in dialog");
+    }
+    await page.waitForSelector(SEL.dialog[0], { hidden: true, timeout: 8000 }).catch(() => {});
   }
-
-  if (!(await clickDialogButton(page, "Remove", { timeout: 5000 }))) {
-    await page.keyboard.press("Escape");
-    throw new Error("Remove confirm button not found/enabled in dialog");
-  }
-  await page.waitForSelector(SEL.dialog[0], { hidden: true, timeout: 8000 }).catch(() => {});
   await jitter(800, 1500);
 }
 
@@ -410,7 +518,11 @@ async function processGroup(page, group, threadState, progress, cap) {
     const rows = await collectResultRows(page).catch(() => []);
     const own = rows.filter((r) => isOwnRow(r) && !clicked.has(r.key));
     const anyUnclicked = rows.filter((r) => !clicked.has(r.key));
-    const pick = own[0] || (rows.some(isOwnRow) ? null : anyUnclicked[0]);
+    // Prefer my own rows (fast path), but fall back to ANY unclicked row.
+    // In nickname threads own-detection fails on result rows, yet clicking any
+    // row still scrolls the thread into view and the sweep — which keys off the
+    // reliable "You:" aria-label — catches my messages regardless of nickname.
+    const pick = own[0] || anyUnclicked[0];
 
     if (!pick) {
       // No new relevant rows visible — scroll panel to load more.
@@ -443,6 +555,7 @@ async function main() {
   const auto = args.includes("--auto");
   const smallest = args.includes("--smallest");
   const largest = args.includes("--largest");
+  const navcheck = args.includes("--navcheck"); // read-only: open each thread, report, never unsend
   const onlyThread = args.includes("--thread") ? args[args.indexOf("--thread") + 1] : null;
   const cap = args.includes("--cap") ? parseInt(args[args.indexOf("--cap") + 1], 10) : null;
 
@@ -486,11 +599,41 @@ async function main() {
   const page = (await browser.pages())[0];
   await page.goto(MESSENGER, { waitUntil: "networkidle2", timeout: 60000 });
 
-  const loggedIn = await find(page, "composer", { timeout: 5000 });
-  if (!loggedIn && !page.url().includes("/t/")) {
+  const loggedIn = await find(page, "globalSearchInput", { timeout: 8000 });
+  if (!loggedIn && !navcheck) {
     console.log("\n  Log in to messenger.com in the browser window.");
     console.log("  If prompted, enter your E2EE PIN so encrypted chats load.");
     await prompt.ask("  Press ENTER when you can see your chats... ");
+  }
+
+  // Read-only navigation check: prove each thread opens (and its target words
+  // are searchable) without unsending anything.
+  if (navcheck) {
+    let ok = 0, fail = 0;
+    for (const thread of queue) {
+      const who = thread.title || thread.participants.slice(0, 3).join(", ");
+      process.stdout.write(`\n  ${who} [${thread.source}] … `);
+      try {
+        await navigateToThread(page, thread, progress);
+        const n = await renderedMessageCount(page);
+        // Confirm an actual target message is findable in-conversation
+        // (snippet-based, nickname-proof).
+        let found = "?";
+        try {
+          found = (await verifyOwnMessage(page, thread.groups[0].messages[0].text)) ? "yes" : "not-found";
+        } catch { found = "search-failed"; }
+        console.log(`OPENED (${n} msgs, target findable: ${found})`);
+        ok++;
+      } catch (e) {
+        console.log(`FAILED — ${e.message}`);
+        fail++;
+      }
+      await jitter(1500, 3000);
+    }
+    console.log(`\n  navcheck: ${ok} opened, ${fail} failed`);
+    await browser.close();
+    prompt.close();
+    return;
   }
 
   let sessionUnsent = 0;
