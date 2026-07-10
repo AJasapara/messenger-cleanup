@@ -551,7 +551,10 @@ async function processGroup(page, group, threadState, progress, cap) {
     for (const m of messages) {
       if (standalone.test(m.text)) continue;
       const token = (m.text.split(/\s+/).find((t) => t.toLowerCase().includes(sw)) || "").toLowerCase();
-      if (token.length >= 4 && token !== sw) gluedTokens.add(token);
+      // A real fused word is short; a 40+ char "token" is base64/a URL — never search it.
+      if (token.length >= 4 && token.length <= 40 && token !== sw && !/^data:|^https?:/.test(token)) {
+        gluedTokens.add(token);
+      }
     }
     for (const q of gluedTokens) {
       if (unsent >= messages.length || (cap && progress.totalUnsent >= cap)) break;

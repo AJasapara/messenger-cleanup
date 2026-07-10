@@ -91,6 +91,9 @@ SYSTEM_MESSAGE = re.compile(
     re.I,
 )
 
+# Inline image/sticker data (data URI or a long base64 run) — never typed text.
+DATA_BLOB = re.compile(r"data:[^;\s]+;base64,|[A-Za-z0-9+/]{100,}")
+
 
 def pick_search_word(hits):
     """Search term = shortest matched string (short terms still match longer
@@ -120,6 +123,11 @@ def main():
     skipped_system = []
 
     def add_hit(thread_key, thread_id, title, participants, source, text, ts_ms):
+        # Inline images/stickers can land in `content` as a data URI or long
+        # base64 run — not typed text. A word buried in the base64 is a false
+        # positive (and unsearchable), so skip any message containing such a blob.
+        if DATA_BLOB.search(text):
+            return
         hits = find_hits(pattern, text)
         if not hits:
             return
