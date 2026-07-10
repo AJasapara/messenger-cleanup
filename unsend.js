@@ -537,17 +537,25 @@ async function processGroup(page, group, threadState, progress, cap) {
 
   let unsent = await runSearch(search_word);
 
-  // Fallback for glued words: Messenger's search tokenizes on spaces, so a word
-  // fused into a longer token (e.g. a word run together with periods or no
-  // spaces) won't surface when you search the word alone. Retry with the LEADING
-  // token of each still-unmatched message — it prefix-matches the whole token.
+  // Fallback ONLY for glued words: when the search word is fused inside a longer
+  // token (a word run together with no spaces), Messenger's word-based search
+  // won't surface it — retry with the whole containing token, which prefix-
+  // matches it. If the word stands alone in the message, the primary search
+  // already covered it (a miss means the message is already gone), so retrying
+  // with other words — especially common ones — is pointless; skip it.
   if (unsent < messages.length) {
-    const leadTokens = [...new Set(
-      messages.map((m) => (m.text.match(/[A-Za-z0-9]+/) || [""])[0].toLowerCase())
-    )].filter((t) => t && t !== search_word.toLowerCase() && t.length >= 3);
-    for (const q of leadTokens) {
+    const sw = search_word.toLowerCase();
+    const swEsc = sw.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const standalone = new RegExp(`(^|\\s)${swEsc}(\\s|$)`, "i"); // whitespace-bounded
+    const gluedTokens = new Set();
+    for (const m of messages) {
+      if (standalone.test(m.text)) continue;
+      const token = (m.text.split(/\s+/).find((t) => t.toLowerCase().includes(sw)) || "").toLowerCase();
+      if (token.length >= 4 && token !== sw) gluedTokens.add(token);
+    }
+    for (const q of gluedTokens) {
       if (unsent >= messages.length || (cap && progress.totalUnsent >= cap)) break;
-      console.log(`      ↻ retrying with leading token "${q}"…`);
+      console.log(`      ↻ glued word — retrying with token "${q}"…`);
       unsent += await runSearch(q);
     }
   }
