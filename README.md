@@ -4,157 +4,105 @@ It's ok. We get it. No judgment here — we were all kids once.
 
 Somewhere in your Facebook Messenger history there are things you'd rather not
 have said. Old edgelord phases, dead memes, secondhand-embarrassment one-liners,
-whatever. This tool finds the messages **you** sent that match a word list you
-control, and unsends them for you — one clean sweep, at a safe pace, with you in
-the driver's seat the whole time.
+whatever. This tool finds the messages **you** sent that match words *you* choose,
+and unsends them for you — one clean sweep.
 
-Messenger has no API, so this drives the real website in a browser window you
-log into. You approve each conversation; it does the clicking.
-
----
-
-## What you need
-
-- **Python 3** and **Node.js** installed.
-- **Your Facebook data export** (instructions below). Everything runs against
-  *your own* downloaded data — the tool never scrapes anyone else.
+Messenger has no API, so it drives the real website in a browser window you log
+into once, and does the clicking for you.
 
 ---
 
-## Step 1 — Download your Facebook data
+## The easy way: let an AI drive it (recommended)
 
-1. Go to **facebook.com → Settings & privacy → Settings → Your information and
-   permissions → Download your information** (or visit
-   [facebook.com/dyi](https://www.facebook.com/dyi)).
-2. Click **Create export**, and set:
-   - **Format: JSON** (this matters — the tool reads JSON, not HTML)
-   - **Media quality:** Low is fine (you're only after text)
-   - **Date range:** All time
-   - Under **customize**, you can select just **Messages** to make it smaller
-     and faster.
-3. Wait for the email, download the zip(s), and **unzip** them.
-4. You'll get a folder called `your_facebook_activity`. Move it somewhere handy —
-   e.g. into an `export/` folder next to this tool, so the path is
-   `./export/your_facebook_activity`.
+You don't need to be technical. This whole thing was *built* by working with an AI
+coding assistant, and the easiest way to use it is the same way — let the AI do the
+scanning, the reviewing, and the running for you.
 
-> Big exports arrive as several zips. Unzip them all into the same place; they
-> merge into one `your_facebook_activity` folder.
+**What you need:** a computer with an AI coding assistant that can run terminal
+commands (e.g. [Claude Code](https://claude.com/claude-code), Cursor, or similar),
+plus Python 3 and Node.js installed (the AI can help you install those too).
+
+### Step 1 — Download your Facebook data
+Go to [facebook.com/dyi](https://www.facebook.com/dyi) →
+**Download your information** → **Create export** with:
+- **Format: JSON** (important — not HTML)
+- **Date range:** All time
+- (optional) under *customize*, select just **Messages** to keep it small
+
+Wait for the email, download the zip(s), and unzip them. You'll get a folder called
+`your_facebook_activity`. ([Facebook's official instructions](https://www.facebook.com/help/212802592074644).)
+
+### Step 2 — Have the AI scan your messages and build the queue
+Open this project folder in your AI assistant and tell it what you want. For example:
+
+> *"I want to clean up offensive/cringe messages I sent on Facebook Messenger. My
+> unzipped export is at `<path>` and my name in Messenger is `<Your Name>`. Scan my
+> messages, build the list of ones to remove, and show me a summary so I can review
+> the scope before anything is deleted."*
+
+The AI will set up your config, run the scan, and produce **`tasks.json`** — the
+list of exactly which messages will be removed, per conversation. **Review it with
+the AI**: ask it to widen the net ("also catch X"), narrow it ("ignore inside jokes
+with my close friends"), or show you specific matches. Nothing is deleted in this step.
+
+### Step 3 — Have the AI run the cleanup
+Tell the AI to start it (e.g. *"looks good, run the cleanup"*). It will run the
+commands and a Chromium browser window will open.
+
+**Log into messenger.com in that window** (enter your password / 2FA / E2EE PIN if
+asked). Your login is remembered after the first time. Then the tool works through
+the queue on its own — searching each conversation, finding your messages, and
+unsending them. Ask the AI to check progress or read you the status anytime.
+
+That's it. You can run it in one sitting or leave it going in the background.
 
 ---
 
-## Step 2 — Tell it who you are and what to clean
+## The manual way (if you're comfortable in a terminal)
 
 ```bash
-cp config.example.json config.json
-cp words.example.txt   words.txt
+cp config.example.json config.json     # set your_name + export path
+cp words.example.txt   words.txt        # put the words you want gone, one per line
+python3 scan.py                         # → writes tasks.json (review it)
+npm install                             # first time only
+node unsend.js --auto                   # log in when the browser opens, then let it run
 ```
 
-Edit **`config.json`**:
-
-```json
-{
-  "your_name":  "Jane Doe",                        // EXACTLY as it shows in Messenger
-  "export_dir": "./export/your_facebook_activity", // where you put the unzipped export
-  "e2ee_zip":   "",                                // optional, see note below
-  "words_file": "./words.txt"
-}
-```
-
-Edit **`words.txt`** — put whatever you want gone, one entry per line:
-
-```
-cringe
-yikes
-re:lo+l          # regex: matches lol, loool, looool
-```
-
-- Plain lines match that **whole word**, case-insensitively.
-- Start a line with `re:` to use a regex fragment for fancier matches.
-- `#` lines and blank lines are ignored.
-
-Only messages **you** sent that match get queued. Nothing from anyone else is
-ever touched.
-
----
-
-## Step 3 — Scan
-
-```bash
-python3 scan.py
-```
-
-This writes **`tasks.json`** — the list of threads and exact messages to clean —
-and prints a summary so you can sanity-check before touching anything:
-
-```
-Threads: 42   Messages to clean up: 137
-Top threads:
-   28  Group chat with the guys
-   19  Alex Rivera
-   ...
-```
-
-Re-run any time you tweak `words.txt`.
-
----
-
-## Step 4 — Clean up
-
-```bash
-npm install          # first time only, installs the browser automation
-node unsend.js
-```
-
-A browser window opens. **Log into messenger.com** once (your login is
-remembered for next time). Then for each conversation the tool shows you what it
-found and waits for you to press **Enter** to unsend everything in that thread —
-or `s` to skip, or `q` to quit.
-
-Handy options:
-
+Useful flags:
 ```bash
 node unsend.js --list        # preview the queue without opening a browser
-node unsend.js --smallest    # knock out small threads first (breadth first)
-node unsend.js --cap 100     # stop after 100 unsends this session
-node unsend.js --auto        # don't ask per thread — full auto
+node unsend.js --smallest    # do small threads first
+node unsend.js --auto        # run unattended, no per-thread prompt (default recommendation)
+node unsend.js               # ask before each conversation (Enter=go, s=skip, q=quit)
+node unsend.js --cap 100     # optional: stop after 100 unsends (see note below)
 ```
 
-It's **resumable**: stop whenever (`q`, or just close it), run it again later and
-it picks up where it left off. Progress is saved after every single unsend.
+It's **resumable** — stop anytime and run it again; progress is saved after every
+single unsend, so it picks up right where it left off.
+
+`words.txt` format: one entry per line. Plain lines match a whole word; start a line
+with `re:` for a regex fragment; `#` lines are comments.
 
 ---
 
-## Go slow — seriously
+## Good to know
 
-Facebook will temporarily block you if you hammer it. The tool already paces
-itself with randomized human-like delays, but you should also:
-
-- Keep sessions to a few hundred unsends a day (`--cap 250` or lower).
-- Spread a big cleanup over several days. It resumes automatically.
-
-Unsending is **permanent**, so scan and review your `tasks.json` before you run.
-
----
-
-## Notes & troubleshooting
-
-- **Encrypted / secret chats.** Newer 1:1 chats are end-to-end encrypted and may
-  not be in the standard export. Some people have a separate per-thread Messenger
-  download (a zip of JSON files, one per conversation). If you have one, point
-  `e2ee_zip` at it in `config.json` and it'll be included too. If not, just leave
-  it blank.
-- **Stale IDs, nicknames, deactivated accounts — handled automatically.** Export
-  thread IDs often go stale (threads that moved to end-to-end encryption get new
-  IDs), so the tool finds the right thread via the "Search Messenger" box — by
-  name, then by message text. It identifies your own messages even when a chat
-  uses nicknames, and when the other person's account is deactivated it uses the
-  "Remove" menu item in place of "Unsend". You don't need to do anything for these.
-- **A thread fails or a button isn't found.** Messenger occasionally changes its
-  layout. All the UI strings live in **`selectors.json`** — a failing step will
-  drop a screenshot in `failures/` so you can see what changed and update the
-  matching selector. PRs welcome.
-- **Nothing is uploaded anywhere.** Everything runs locally on your machine. Your
-  export, your word list, and your login stay on your computer. `.gitignore`
-  keeps all of it out of git.
+- **You can just let it run.** It paces itself with randomized human-like delays.
+  Running it unattended through a large history in one go (even overnight) works
+  fine. If you'd rather limit a session, `--cap N` is there, but it isn't required.
+- **Unsending is permanent.** Review `tasks.json` first (the AI will show you). Only
+  messages **you** sent are ever touched — never anyone else's.
+- **Nothing is uploaded anywhere.** Your export, your word list, and your login stay
+  on your computer. `.gitignore` keeps all of it out of git.
+- **Handled automatically:** stale thread IDs (chats that moved to end-to-end
+  encryption get new IDs — it re-finds them by name/message text), threads that use
+  nicknames for you, and deactivated accounts (uses "Remove" instead of "Unsend").
+- **Encrypted/secret chats** may not be in the standard export. If you have a
+  separate per-thread Messenger download (a zip of JSON files), point `e2ee_zip` at
+  it in `config.json` and it'll be included too.
+- **If a step fails or a button isn't found,** Messenger probably changed its layout.
+  The UI strings live in `selectors.json`, and failures drop a screenshot in
+  `failures/`. Ask your AI to look at the screenshot and update the selector — that's
+  exactly how this tool was maintained. PRs welcome.
 
 MIT licensed. Be kind to your past self. 💛
