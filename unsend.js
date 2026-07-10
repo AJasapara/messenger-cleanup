@@ -494,56 +494,65 @@ async function processGroup(page, group, threadState, progress, cap) {
   if (messages.length > 3) console.log(`       … and ${messages.length - 3} more`);
 
   const targetSet = new Set(messages.map((m) => normalize(m.text)));
-  let unsent = 0;
 
-  await searchInConversation(page, search_word);
+  // Run one search query: sweep what renders, then click through result rows
+  // to page the thread and sweep each region. Returns messages unsent.
+  const runSearch = async (query) => {
+    let got = 0;
+    await searchInConversation(page, query);
+    got += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
 
-  // Sweep whatever rendered immediately.
-  unsent += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
-
-  // Click through result rows — own rows ("You") first; if none exist at all,
-  // fall back to clicking every row (a click merely renders that region).
-  const clicked = new Set();
-  let stalePasses = 0;
-
-  for (let iter = 0; iter < 80 && stalePasses < 3; iter++) {
-    if (unsent >= messages.length) break;
-    if (cap && progress.totalUnsent >= cap) break;
-
-    // Panel can close after unsend interactions — reopen if needed.
-    if (!(await page.$(SEL.conversationSearchInput[0]))) {
-      await searchInConversation(page, search_word).catch(() => {});
+    const clicked = new Set();
+    let stalePasses = 0;
+    for (let iter = 0; iter < 80 && stalePasses < 3; iter++) {
+      if (got >= messages.length) break;
+      if (cap && progress.totalUnsent >= cap) break;
+      if (!(await page.$(SEL.conversationSearchInput[0]))) {
+        await searchInConversation(page, query).catch(() => {});
+      }
+      const rows = await collectResultRows(page).catch(() => []);
+      const own = rows.filter((r) => isOwnRow(r) && !clicked.has(r.key));
+      const anyUnclicked = rows.filter((r) => !clicked.has(r.key));
+      // Prefer my own rows, but fall back to any row: clicking it scrolls the
+      // thread and the sweep (keyed on the "You:" aria-label) still finds mine,
+      // which also makes nickname threads work.
+      const pick = own[0] || anyUnclicked[0];
+      if (!pick) {
+        const before = rows.length;
+        await scrollResults(page);
+        const after = (await collectResultRows(page).catch(() => [])).length;
+        if (after <= before) stalePasses++; else stalePasses = 0;
+        continue;
+      }
+      clicked.add(pick.key);
+      try { await mouseClick(page, pick.handle); } catch { continue; }
+      await jitter(2000, 3200);
+      got += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
     }
+    const clear = await find(page, "clearSearchButton", { timeout: 800 });
+    if (clear) await mouseClick(page, clear).catch(() => {});
+    await page.keyboard.press("Escape").catch(() => {});
+    return got;
+  };
 
-    const rows = await collectResultRows(page).catch(() => []);
-    const own = rows.filter((r) => isOwnRow(r) && !clicked.has(r.key));
-    const anyUnclicked = rows.filter((r) => !clicked.has(r.key));
-    // Prefer my own rows (fast path), but fall back to ANY unclicked row.
-    // In nickname threads own-detection fails on result rows, yet clicking any
-    // row still scrolls the thread into view and the sweep — which keys off the
-    // reliable "You:" aria-label — catches my messages regardless of nickname.
-    const pick = own[0] || anyUnclicked[0];
+  let unsent = await runSearch(search_word);
 
-    if (!pick) {
-      // No new relevant rows visible — scroll panel to load more.
-      const before = rows.length;
-      await scrollResults(page);
-      const after = (await collectResultRows(page).catch(() => [])).length;
-      if (after <= before) stalePasses++; else stalePasses = 0;
-      continue;
+  // Fallback for glued words: Messenger's search tokenizes on spaces, so a word
+  // fused into a longer token (e.g. a word run together with periods or no
+  // spaces) won't surface when you search the word alone. Retry with the LEADING
+  // token of each still-unmatched message — it prefix-matches the whole token.
+  if (unsent < messages.length) {
+    const leadTokens = [...new Set(
+      messages.map((m) => (m.text.match(/[A-Za-z0-9]+/) || [""])[0].toLowerCase())
+    )].filter((t) => t && t !== search_word.toLowerCase() && t.length >= 3);
+    for (const q of leadTokens) {
+      if (unsent >= messages.length || (cap && progress.totalUnsent >= cap)) break;
+      console.log(`      ↻ retrying with leading token "${q}"…`);
+      unsent += await runSearch(q);
     }
-
-    clicked.add(pick.key);
-    try { await mouseClick(page, pick.handle); } catch { continue; }
-    await jitter(2000, 3200); // wait for the jump
-
-    unsent += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
   }
 
   console.log(`      → ${unsent}/${expected_matches} unsent for "${search_word}"`);
-  const clear = await find(page, "clearSearchButton", { timeout: 800 });
-  if (clear) await mouseClick(page, clear).catch(() => {});
-  await page.keyboard.press("Escape").catch(() => {});
   return unsent;
 }
 

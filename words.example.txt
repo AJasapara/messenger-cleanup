@@ -10,6 +10,9 @@
 #   - Start a line with "re:" to use your own regex fragment for fancier matching.
 #       re:lo+l       matches "lol", "loool", "looool"
 #       re:\bum+\b    matches "um", "ummm"
+#   - Plain words match whole words only, so "cringe" won't match "cringeworthy".
+#     To also catch a word fused inside another (e.g. "socringe"), drop the
+#     boundary with a regex line: `re:cringe` matches it anywhere it appears.
 #
 # The examples below are harmless placeholders. Replace them with your own.
 

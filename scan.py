@@ -74,6 +74,24 @@ def find_hits(pattern, text):
     return [m.group(0) for m in pattern.finditer(text)]
 
 
+# System/action events (group renames, nickname changes, etc.) are stored as
+# messages starting with "You <verb>…" but are NOT unsendable chat bubbles — they
+# only match when a nickname or group name happens to contain one of your words.
+# Skipping them keeps the queue free of permanent 0/1 "partials".
+SYSTEM_MESSAGE = re.compile(
+    r"^You (?:"
+    r"named the (?:group|conversation) |"
+    r"created (?:the group|a plan|your group)|"
+    r"(?:set|cleared) (?:your nickname|the nickname for )|"
+    r"changed the (?:group photo|(?:chat |group )?theme|(?:chat |group )?colou?rs?|word effect|quick reaction|emoji)|"
+    r"set the (?:emoji|quick reaction|word effect|photo)|"
+    r"pinned a message|unpinned a message|"
+    r"turned (?:on|off) "
+    r")",
+    re.I,
+)
+
+
 def pick_search_word(hits):
     """Search term = shortest matched string (short terms still match longer
     variants / typos when searching inside the conversation)."""
@@ -99,9 +117,14 @@ def main():
 
     threads = {}
 
+    skipped_system = []
+
     def add_hit(thread_key, thread_id, title, participants, source, text, ts_ms):
         hits = find_hits(pattern, text)
         if not hits:
+            return
+        if SYSTEM_MESSAGE.match(text.strip()):
+            skipped_system.append(text)
             return
         rec = threads.setdefault(thread_key, {
             "thread_id": thread_id, "thread_dir": thread_key, "source": source,
@@ -190,6 +213,9 @@ def main():
 
     print(f"Wrote tasks.json")
     print(f"Threads: {len(out_threads)}   Messages to clean up: {total}")
+    if skipped_system:
+        print(f"Skipped {len(skipped_system)} system messages "
+              f"(group renames / nickname changes — not unsendable)")
     print("Top threads:")
     for t in out_threads[:10]:
         who = t["title"] or ", ".join(t["participants"][:3])
