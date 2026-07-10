@@ -161,7 +161,14 @@ async function waitForMessages(page, ms = 12000) {
 
 /** Focus the left "Search Messenger" box, clear it, type a query, let it settle. */
 async function typeGlobalSearch(page, query) {
-  const gs = await find(page, "globalSearchInput", { timeout: 6000 });
+  let gs = await find(page, "globalSearchInput", { timeout: 6000 });
+  if (!gs) {
+    // Page may be stuck mid-load (e.g. after a slow/dead thread) — reset to the
+    // inbox and retry so the left sidebar search re-renders.
+    await page.goto(MESSENGER, { waitUntil: "networkidle2", timeout: 60000 }).catch(() => {});
+    await jitter(1500, 2500);
+    gs = await find(page, "globalSearchInput", { timeout: 8000 });
+  }
   if (!gs) throw new Error("global search input not found");
   await mouseClick(page, gs);
   await jitter(500, 900);
@@ -272,13 +279,15 @@ async function navigateToThread(page, thread, progress) {
     console.log(`    opened via ${how} → ${p}`);
   };
 
-  // 1. Fast paths.
+  // 1. Fast paths — direct URLs. Deactivated accounts and very large threads
+  //    render slowly (10-20s), so wait generously. A healthy thread returns as
+  //    soon as messages appear; only slow/genuinely-stale ids hit the full wait.
   const direct = [];
   if (progress.resolvedUrls[thread.thread_dir]) direct.push(progress.resolvedUrls[thread.thread_dir]);
   if (thread.thread_id) direct.push(`/t/${thread.thread_id}`);
   for (const p of direct) {
     await page.goto(MESSENGER + p, { waitUntil: "networkidle2", timeout: 60000 });
-    if (await waitForMessages(page, 8000)) { cache("direct id"); return true; }
+    if (await waitForMessages(page, 18000)) { cache("direct id"); return true; }
   }
 
   // 2. Global search by name.
@@ -300,6 +309,15 @@ async function navigateToThread(page, thread, progress) {
   for (const sample of samples) {
     console.log(`    resolving via message text: "${sample.slice(0, 40)}"…`);
     if (await resolveByMessageText(page, sample, expectName)) { cache("text search"); return true; }
+  }
+
+  // 4. Last resort: deactivated accounts don't surface in global search, so the
+  //    direct id is their only route — it may just have been slow. Reopen it and
+  //    wait even longer before giving up.
+  if (thread.thread_id) {
+    console.log(`    last resort: reopening t/${thread.thread_id} with a long wait…`);
+    await page.goto(`${MESSENGER}/t/${thread.thread_id}`, { waitUntil: "networkidle2", timeout: 60000 });
+    if (await waitForMessages(page, 25000)) { cache("direct id (slow)"); return true; }
   }
 
   throw new Error(`could not open "${expectName}" via id, name, or message-text search`);
