@@ -1,0 +1,62 @@
+{
+  "_comment": "Verified against real messenger.com sessions (ui-captures/ + probe runs, 2026-07-09). Candidate selectors tried in order.",
+
+  "composer": [
+    "[role='textbox'][contenteditable='true']"
+  ],
+
+  "message": [
+    "[aria-roledescription='message']"
+  ],
+
+  "conversationInfoButton": [
+    "[aria-label='Conversation information']"
+  ],
+
+  "conversationSearchRow": [
+    "div[aria-label='Search']"
+  ],
+
+  "conversationSearchInput": [
+    "input[placeholder='Search in conversation']"
+  ],
+
+  "clearSearchButton": [
+    "div[aria-label='Clear search']"
+  ],
+
+  "globalSearchInput": [
+    "input[aria-label='Search Messenger']",
+    "input[placeholder='Search Messenger']"
+  ],
+
+  "globalSearchOption": [
+    "[role='option']"
+  ],
+
+  "moreActionsButton": [
+    "[aria-label='More actions']"
+  ],
+
+  "messageActionsToolbar": [
+    "[role='toolbar'][aria-label='Message actions']"
+  ],
+
+  "unsendMenuItem": [
+    "[role='menuitem'][aria-label='Unsend message']",
+    "div[aria-label='Unsend message']"
+  ],
+
+  "dialog": [
+    "div[role='dialog']"
+  ],
+
+  "unsendForEveryoneRadio": [
+    "div[role='dialog'] input[type='radio'][value='0']"
+  ],
+
+  "confirmRemoveButton": [
+    "div[role='dialog'] div[aria-label='Remove'][role='button']",
+    "div[role='dialog'] [aria-label='Remove']"
+  ]
+}

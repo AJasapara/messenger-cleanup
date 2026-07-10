@@ -1,0 +1,13 @@
+{
+  "name": "messenger-cleanup",
+  "version": "1.0.0",
+  "description": "Find and unsend old cringe you sent on Facebook Messenger, from your own data export.",
+  "license": "MIT",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node unsend.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.40.0"
+  }
+}

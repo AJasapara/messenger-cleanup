@@ -1,0 +1,6 @@
+{
+  "your_name": "Your Name Here",
+  "export_dir": "./export/your_facebook_activity",
+  "e2ee_zip": "",
+  "words_file": "./words.txt"
+}

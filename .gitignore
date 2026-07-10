@@ -1,0 +1,17 @@
+# Your personal stuff — never commit any of this.
+config.json
+words.txt
+tasks.json
+progress.json
+export/
+messages.zip
+*.zip
+
+# Runtime artifacts
+chrome-profile/
+failures/
+debug/
+node_modules/
+
+# OS noise
+.DS_Store

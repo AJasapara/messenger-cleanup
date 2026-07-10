@@ -1,0 +1,19 @@
+# Your word list — one entry per line.
+#
+# Copy this file to words.txt and put whatever YOU want gone in it.
+# Only messages you sent that match these get queued for unsending.
+#
+# Rules:
+#   - Blank lines and lines starting with # are ignored.
+#   - A plain line matches that whole word, case-insensitively.
+#       cringe        matches "Cringe", "CRINGE", "cringe" (but not "cringeworthy")
+#   - Start a line with "re:" to use your own regex fragment for fancier matching.
+#       re:lo+l       matches "lol", "loool", "looool"
+#       re:\bum+\b    matches "um", "ummm"
+#
+# The examples below are harmless placeholders. Replace them with your own.
+
+cringe
+yikes
+lmaooo
+re:so+ cringe
