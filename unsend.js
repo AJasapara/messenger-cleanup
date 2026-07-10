@@ -513,39 +513,62 @@ async function processGroup(page, group, threadState, progress, cap) {
 
   const targetSet = new Set(messages.map((m) => normalize(m.text)));
 
-  // Run one search query: sweep what renders, then click through result rows
-  // to page the thread and sweep each region. Returns messages unsent.
+  // How the search-result rows label MY messages: "You" / my real name, plus any
+  // nickname we learn below (some threads relabel senders). Shared across the
+  // search words we run for this group.
+  const myNames = new Set(["you", normalize(ME)].filter(Boolean));
+  let identityKnown = false;
+
+  // Run one search query. We ONLY click result rows that are MY messages (we can
+  // only unsend our own, so clicking other people's rows just wastes time). Each
+  // click jumps to that message and the sweep unsends every one of MY co-rendered
+  // matches in one pass. We keep scrolling the panel for more results until all
+  // my matches are handled or the list is genuinely exhausted.
   const runSearch = async (query) => {
     let got = 0;
     await searchInConversation(page, query);
     got += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
 
     const clicked = new Set();
-    let stalePasses = 0;
-    for (let iter = 0; iter < 80 && stalePasses < 3; iter++) {
+    let stale = 0;
+    const MAX_STALE = 6; // scroll persistence — don't quit at the first ~10 rows
+    while (stale < MAX_STALE) {
       if (got >= messages.length) break;
       if (cap && progress.totalUnsent >= cap) break;
       if (!(await page.$(SEL.conversationSearchInput[0]))) {
         await searchInConversation(page, query).catch(() => {});
       }
-      const rows = await collectResultRows(page).catch(() => []);
-      const own = rows.filter((r) => isOwnRow(r) && !clicked.has(r.key));
-      const anyUnclicked = rows.filter((r) => !clicked.has(r.key));
-      // Prefer my own rows, but fall back to any row: clicking it scrolls the
-      // thread and the sweep (keyed on the "You:" aria-label) still finds mine,
-      // which also makes nickname threads work.
-      const pick = own[0] || anyUnclicked[0];
+
+      const fresh = (await collectResultRows(page).catch(() => [])).filter((r) => !clicked.has(r.key));
+      const mineRows = fresh.filter((r) => myNames.has(normalize(r.sender)));
+      // Click my rows. Only if we haven't yet identified myself in this thread do
+      // we probe one unknown row — to learn my (possibly nicknamed) sender label.
+      let pick = mineRows[0];
+      const probing = !pick && !identityKnown && fresh.length > 0;
+      if (probing) pick = fresh[0];
+
       if (!pick) {
-        const before = rows.length;
+        // Nothing left to click on screen — scroll to load more results.
+        const before = fresh.length;
         await scrollResults(page);
-        const after = (await collectResultRows(page).catch(() => [])).length;
-        if (after <= before) stalePasses++; else stalePasses = 0;
+        const after = (await collectResultRows(page).catch(() => [])).filter((r) => !clicked.has(r.key)).length;
+        if (after <= before) stale++; else stale = 0;
         continue;
       }
+
       clicked.add(pick.key);
+      const beforeUnsent = got;
       try { await mouseClick(page, pick.handle); } catch { continue; }
       await jitter(2000, 3200);
       got += await sweepRenderedMatches(page, targetSet, threadState, progress, cap);
+
+      if (got > beforeUnsent) {
+        // This row led to one of my messages → remember its sender label so from
+        // here on we filter straight to my rows (works even in nickname threads).
+        myNames.add(normalize(pick.sender));
+        identityKnown = true;
+        stale = 0;
+      }
     }
     const clear = await find(page, "clearSearchButton", { timeout: 800 });
     if (clear) await mouseClick(page, clear).catch(() => {});
